@@ -3,7 +3,8 @@
 *The World's First Autonomous Skin Health & Intelligent Fashion Digital Twin*
 
 One Scan. One AI. Healthier Skin. Smarter Style. Zero Guesswork.
-
+![Alternative text](asset/main.png)
+![Alternative text](asset/main2.png)
 ## Architecture
 
 ```
