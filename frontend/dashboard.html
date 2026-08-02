@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>DermaTwin AI — Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<canvas id="bg-canvas"></canvas>
+
+<div class="page">
+  <nav class="nav">
+    <div class="wordmark">Derma<span>Twin</span> AI</div>
+    <div>
+      <a href="index.html">Scan</a>
+      <a href="mirror.html">Mirror</a>
+      <a href="dashboard.html" class="active">Dashboard</a>
+    </div>
+  </nav>
+
+  <div class="eyebrow">Retail &amp; audit console · 02 dashboard</div>
+  <h1>Every twin, every routine,<br/>one verifiable <span class="accent">ledger</span>.</h1>
+  <p class="lede">Aggregate view across all scanned users, plus the Hedera Consensus Service audit trail proving each recommendation hasn't been altered after the fact.</p>
+
+  <div class="stat-strip" id="statStrip"></div>
+
+  <div class="panel">
+    <h3>Skin metrics — most recent scan</h3>
+    <canvas id="radarChart" height="220"></canvas>
+  </div>
+
+  <div class="panel">
+    <h3>Audit trail — Hedera Consensus Service</h3>
+    <div id="auditTableWrap"></div>
+  </div>
+
+  <div class="panel">
+    <h3>Registered digital twins</h3>
+    <div id="twinsTableWrap"></div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
+<script src="background.js"></script>
+<script>
+  initBackground("bg-canvas");
+  const API_BASE = "http://localhost:8000";
+
+  Chart.defaults.color = "#8a90a6";
+  Chart.defaults.font.family = "IBM Plex Mono";
+  Chart.defaults.borderColor = "rgba(255,255,255,0.08)";
+
+  async function load() {
+    let data;
+    try {
+      const res = await fetch(`${API_BASE}/dashboard-summary`);
+      data = await res.json();
+    } catch (err) {
+      document.getElementById("statStrip").innerHTML =
+        `<div class="empty-state">Couldn't reach the backend at ${API_BASE} — start it with "uvicorn main:app --port 8000".</div>`;
+      return;
+    }
+    renderStats(data);
+    renderRadar(data);
+    renderAudit(data.recent_audit_events);
+    renderTwins(data.twins);
+  }
+
+  function renderStats(data) {
+    const stats = [
+      { label: "Total users", num: data.total_users },
+      { label: "Scans completed", num: data.total_scans },
+      { label: "Audit events", num: data.audit_events },
+      { label: "Anchored on-chain", num: data.onchain_anchored_events },
+      { label: "Mock-mode events", num: data.mock_anchored_events },
+    ];
+    document.getElementById("statStrip").innerHTML = stats.map(s =>
+      `<div class="stat"><div class="num">${s.num}</div><div class="label">${s.label}</div></div>`
+    ).join("");
+  }
+
+  function renderRadar(data) {
+    const withMetrics = data.twins.filter(t => t.skin_metrics);
+    const ctx = document.getElementById("radarChart");
+    if (!withMetrics.length) {
+      ctx.replaceWith(Object.assign(document.createElement("div"), {
+        className: "empty-state", textContent: "No scans yet — run a scan from the Scan page."
+      }));
+      return;
+    }
+    const latest = withMetrics[withMetrics.length - 1].skin_metrics;
+    const labels = Object.keys(latest).map(k => k.replace("_", " "));
+    const values = Object.values(latest).map(v => Math.round(v * 100));
+
+    new Chart(ctx, {
+      type: "radar",
+      data: {
+        labels,
+        datasets: [{
+          label: "Skin metric score",
+          data: values,
+          backgroundColor: "rgba(31,184,166,0.18)",
+          borderColor: "#1fb8a6",
+          pointBackgroundColor: "#ff6f59",
+        }],
+      },
+      options: {
+        scales: {
+          r: {
+            angleLines: { color: "rgba(255,255,255,0.08)" },
+            grid: { color: "rgba(255,255,255,0.08)" },
+            pointLabels: { color: "#edeff5", font: { size: 11 } },
+            ticks: { display: false },
+            suggestedMin: 0, suggestedMax: 100,
+          },
+        },
+        plugins: { legend: { display: false } },
+      },
+    });
+  }
+
+  function renderAudit(events) {
+    const wrap = document.getElementById("auditTableWrap");
+    if (!events || !events.length) {
+      wrap.innerHTML = `<div class="empty-state">No audit events yet — run a scan to generate one.</div>`;
+      return;
+    }
+    const rows = events.slice().reverse().map(e => `
+      <tr>
+        <td>${e.user_id}</td>
+        <td>${e.event_type}</td>
+        <td>${new Date(e.timestamp).toLocaleString()}</td>
+        <td><span class="chip ${e.anchored_on_chain ? "on" : "off"}">${e.anchored_on_chain ? "on-chain" : "mock"}</span></td>
+        <td class="mono">${e.hash.slice(0, 16)}…</td>
+      </tr>`).join("");
+    wrap.innerHTML = `
+      <table>
+        <thead><tr><th>User</th><th>Event</th><th>Timestamp</th><th>Status</th><th>Hash</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+  }
+
+  function renderTwins(twins) {
+    const wrap = document.getElementById("twinsTableWrap");
+    if (!twins || !twins.length) {
+      wrap.innerHTML = `<div class="empty-state">No twins registered yet.</div>`;
+      return;
+    }
+    const rows = twins.map(t => `
+      <tr>
+        <td>${t.user_id}</td>
+        <td>${t.skincare_routine ? t.skincare_routine.length : 0} routine steps</td>
+        <td>${t.outfit_recommendations ? t.outfit_recommendations.length : 0} outfit tips</td>
+        <td>${t.climate_context ? t.climate_context.city : "—"}</td>
+        <td>${t.last_updated ? new Date(t.last_updated).toLocaleString() : "—"}</td>
+      </tr>`).join("");
+    wrap.innerHTML = `
+      <table>
+        <thead><tr><th>User</th><th>Routine</th><th>Outfit tips</th><th>City</th><th>Last updated</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+  }
+
+  load();
+</script>
+</body>
+</html>

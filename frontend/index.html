@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>DermaTwin AI — Scan</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<canvas id="bg-canvas"></canvas>
+
+<div class="page">
+  <nav class="nav">
+    <div class="wordmark">Derma<span>Twin</span> AI</div>
+    <div>
+      <a href="index.html" class="active">Scan</a>
+      <a href="mirror.html">Mirror</a>
+      <a href="dashboard.html">Dashboard</a>
+    </div>
+  </nav>
+
+  <div class="eyebrow">Live digital twin · 01 scan</div>
+  <h1>Point your camera at your face.<br/>Watch your <span class="accent">twin</span> come alive.</h1>
+  <p class="lede">One capture runs skin analysis, a personalized routine, climate adjustment, and outfit-color guidance — then anchors a tamper-evident record of the result on the Hedera ledger.</p>
+
+  <div class="scan-module">
+    <div>
+      <div class="viewport idle" id="viewport">
+        <video id="video" autoplay playsinline muted style="display:none;"></video>
+        <canvas id="snapshotCanvas" class="snapshot" style="display:none;"></canvas>
+        <div class="scan-overlay" id="scanOverlay">
+          <div class="grid"></div>
+          <div class="corner tl"></div><div class="corner tr"></div>
+          <div class="corner bl"></div><div class="corner br"></div>
+          <div class="line"></div>
+        </div>
+      </div>
+      <div class="controls">
+        <button class="btn" id="camBtn">Enable camera</button>
+        <button class="btn file-btn" id="fileBtn">Choose photo</button>
+        <input type="file" id="fileInput" accept="image/*" style="display:none;" />
+        <button class="btn primary" id="captureBtn" disabled>Capture &amp; analyze</button>
+        <button class="btn" id="retakeBtn" style="display:none;">Retake</button>
+      </div>
+    </div>
+
+    <div class="twin-panel">
+      <h3>Twin context</h3>
+      <div class="field-row">
+        <label>User ID</label>
+        <input type="text" id="userId" value="demo-user" />
+      </div>
+      <div class="field-row">
+        <label>City (climate agent)</label>
+        <input type="text" id="city" value="Nairobi" />
+      </div>
+      <div class="field-row">
+        <label>Allergies (comma-separated)</label>
+        <input type="text" id="allergies" placeholder="e.g. fragrance, retinol" />
+      </div>
+      <div class="field-row" style="margin-top:auto;">
+        <label id="statusLine" style="font-family:var(--font-mono);">Idle — enable your camera to begin.</label>
+      </div>
+    </div>
+  </div>
+
+  <div class="results" id="results">
+    <div class="card-grid">
+      <div class="card">
+        <h4>Skin metrics</h4>
+        <div id="metricsBars"></div>
+      </div>
+      <div class="card">
+        <h4>Skincare routine</h4>
+        <ul id="routineList"></ul>
+      </div>
+      <div class="card">
+        <h4>Outfit &amp; color guidance</h4>
+        <ul id="colorList"></ul>
+      </div>
+      <div class="card ledger-card">
+        <h4>Hedera audit record</h4>
+        <div id="ledgerBadge"></div>
+        <div class="hash" id="ledgerHash"></div>
+      </div>
+    </div>
+  </div>
+
+  <section class="assistant-panel" aria-labelledby="assistantTitle">
+    <div>
+      <div class="eyebrow">RAG customer care</div>
+      <h2 id="assistantTitle">Ask your DermaTwin assistant</h2>
+      <p class="assistant-note">Answers are grounded in approved product, routine, privacy, and returns guidance. This is not a diagnosis.</p>
+    </div>
+    <div class="assistant-row">
+      <input type="text" id="assistantQuestion" placeholder="How should I introduce a new product?" maxlength="2000" />
+      <button class="btn primary" id="assistantBtn">Ask assistant</button>
+    </div>
+    <label class="assistant-consent"><input type="checkbox" id="assistantUseTwin" /> Allow the assistant to use this user's saved routine</label>
+    <div id="assistantAnswer" class="assistant-answer" aria-live="polite">Ask a question to see grounded guidance and sources.</div>
+    <div class="assistant-rating" id="assistantRating" hidden>
+      <span>Was this helpful?</span>
+      <button class="btn" data-rating="1">1</button><button class="btn" data-rating="2">2</button><button class="btn" data-rating="3">3</button><button class="btn" data-rating="4">4</button><button class="btn" data-rating="5">5</button>
+    </div>
+  </section>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="background.js"></script>
+<script>
+  initBackground("bg-canvas");
+
+  const API_BASE = "http://localhost:8000";
+  const video = document.getElementById("video");
+  const viewport = document.getElementById("viewport");
+  const scanOverlay = document.getElementById("scanOverlay");
+  const snapshotCanvas = document.getElementById("snapshotCanvas");
+  const camBtn = document.getElementById("camBtn");
+  const fileBtn = document.getElementById("fileBtn");
+  const fileInput = document.getElementById("fileInput");
+  const captureBtn = document.getElementById("captureBtn");
+  const retakeBtn = document.getElementById("retakeBtn");
+  const statusLine = document.getElementById("statusLine");
+  let stream = null;
+  let sourceMode = "none"; // "camera" | "file"
+
+  camBtn.addEventListener("click", async () => {
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" }, audio: false });
+      video.srcObject = stream;
+      video.style.display = "block";
+      snapshotCanvas.style.display = "none";
+      viewport.classList.remove("idle");
+      scanOverlay.classList.add("active");
+      captureBtn.disabled = false;
+      captureBtn.textContent = "Capture & analyze";
+      camBtn.style.display = "none";
+      fileBtn.style.display = "none";
+      sourceMode = "camera";
+      statusLine.textContent = "Camera live — center your face and capture.";
+    } catch (err) {
+      statusLine.textContent = "Camera access denied or unavailable: " + err.message;
+    }
+  });
+
+  fileBtn.addEventListener("click", () => fileInput.click());
+
+  fileInput.addEventListener("change", () => {
+    const file = fileInput.files[0];
+    if (!file) return;
+    const img = new Image();
+    img.onload = () => {
+      snapshotCanvas.width = img.naturalWidth;
+      snapshotCanvas.height = img.naturalHeight;
+      snapshotCanvas.getContext("2d").drawImage(img, 0, 0);
+      video.style.display = "none";
+      snapshotCanvas.style.display = "block";
+      viewport.classList.remove("idle");
+      scanOverlay.classList.remove("active");
+      camBtn.style.display = "none";
+      fileBtn.style.display = "none";
+      captureBtn.disabled = false;
+      captureBtn.textContent = "Analyze this photo";
+      sourceMode = "file";
+      statusLine.textContent = "Photo loaded — ready to analyze.";
+    };
+    img.src = URL.createObjectURL(file);
+  });
+
+  retakeBtn.addEventListener("click", () => {
+    camBtn.style.display = "inline-block";
+    fileBtn.style.display = "inline-block";
+    video.style.display = "none";
+    snapshotCanvas.style.display = "none";
+    scanOverlay.classList.remove("active");
+    captureBtn.disabled = true;
+    captureBtn.textContent = "Capture & analyze";
+    retakeBtn.style.display = "none";
+    sourceMode = "none";
+    document.getElementById("results").classList.remove("show");
+    statusLine.textContent = "Idle — enable your camera or choose a photo to begin.";
+  });
+
+  captureBtn.addEventListener("click", async () => {
+    if (sourceMode === "camera") {
+      const ctx = snapshotCanvas.getContext("2d");
+      snapshotCanvas.width = video.videoWidth;
+      snapshotCanvas.height = video.videoHeight;
+      ctx.drawImage(video, 0, 0);
+      video.style.display = "none";
+      snapshotCanvas.style.display = "block";
+      scanOverlay.classList.remove("active");
+    }
+    // file mode: canvas already holds the chosen photo, nothing to redraw
+    captureBtn.disabled = true;
+    retakeBtn.style.display = "inline-block";
+    statusLine.textContent = "Analyzing…";
+
+    snapshotCanvas.toBlob(async (blob) => {
+      const form = new FormData();
+      form.append("user_id", document.getElementById("userId").value || "demo-user");
+      form.append("city", document.getElementById("city").value);
+      form.append("allergies", document.getElementById("allergies").value);
+      form.append("selfie", blob, "selfie.jpg");
+
+      try {
+        const res = await fetch(`${API_BASE}/scan`, { method: "POST", body: form });
+        if (!res.ok) throw new Error(`Backend returned ${res.status}`);
+        const data = await res.json();
+        renderResults(data);
+        statusLine.textContent = "Scan complete and anchored to the audit trail.";
+      } catch (err) {
+        statusLine.textContent = "Couldn't reach the backend — is it running on :8000? (" + err.message + ")";
+      }
+    }, "image/jpeg", 0.9);
+  });
+
+  function renderResults(data) {
+    const twin = data.twin;
+    const audit = data.audit;
+
+    const metricsEl = document.getElementById("metricsBars");
+    metricsEl.innerHTML = "";
+    if (twin.skin_metrics) {
+      Object.entries(twin.skin_metrics).forEach(([key, val]) => {
+        const pct = Math.round(val * 100);
+        metricsEl.innerHTML += `
+          <div class="metric-row"><span>${key.replace("_", " ")}</span><span>${pct}%</span></div>
+          <div class="bar"><div data-target="${pct}" style="width:0%"></div></div>`;
+      });
+      requestAnimationFrame(() => {
+        metricsEl.querySelectorAll(".bar > div").forEach(el => {
+          el.style.width = el.dataset.target + "%";
+        });
+      });
+    }
+
+    document.getElementById("routineList").innerHTML =
+      (twin.skincare_routine || []).map(r => `<li>${r}</li>`).join("");
+    document.getElementById("colorList").innerHTML =
+      (twin.outfit_recommendations || []).map(c => `<li>${c}</li>`).join("");
+
+    const badgeEl = document.getElementById("ledgerBadge");
+    const hashEl = document.getElementById("ledgerHash");
+    if (audit.anchored_on_chain) {
+      badgeEl.innerHTML = `<span class="ledger-badge"><span class="dot"></span>Anchored on Hedera · ${audit.hedera_topic_id}</span>`;
+      hashEl.textContent = `tx ${audit.hedera_transaction_id} · sha256 ${audit.hash}`;
+    } else {
+      badgeEl.innerHTML = `<span class="ledger-badge"><span class="dot"></span>Recorded locally (mock mode)</span>`;
+      hashEl.textContent = `sha256 ${audit.hash} — set HEDERA_ACCOUNT_ID/HEDERA_PRIVATE_KEY to anchor on-chain`;
+    }
+
+    document.getElementById("results").classList.add("show");
+  }
+
+  const assistantQuestion = document.getElementById("assistantQuestion");
+  const assistantAnswer = document.getElementById("assistantAnswer");
+  const assistantRating = document.getElementById("assistantRating");
+  document.getElementById("assistantBtn").addEventListener("click", async () => {
+    const question = assistantQuestion.value.trim();
+    if (!question) return;
+    assistantAnswer.textContent = "Thinking…";
+    try {
+      const response = await fetch(`${API_BASE}/assistant`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ user_id: document.getElementById("userId").value || "guest", question, use_twin: document.getElementById("assistantUseTwin").checked }) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Assistant request failed");
+      assistantAnswer.innerHTML = `<p>${escapeHtml(data.answer)}</p><small>Sources: ${data.sources.map(s => escapeHtml(s.title)).join(" · ")}</small>`;
+      assistantRating.hidden = false;
+    } catch (error) { assistantAnswer.textContent = error.message; }
+  });
+  assistantRating.addEventListener("click", async (event) => {
+    const button = event.target.closest("button[data-rating]");
+    if (!button) return;
+    await fetch(`${API_BASE}/assistant/feedback`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ user_id: document.getElementById("userId").value || "guest", rating: Number(button.dataset.rating), topic: "assistant" }) });
+    assistantAnswer.textContent += " Thanks for the feedback.";
+    assistantRating.hidden = true;
+  });
+  function escapeHtml(value) { return String(value).replace(/[&<>'"]/g, char => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[char])); }
+</script>
+</body>
+</html>

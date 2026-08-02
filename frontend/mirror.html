@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>DermaTwin AI — Mirror</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+<style>
+  .mirror-grid { display: grid; grid-template-columns: 1.1fr 0.9fr; gap: 24px; }
+  @media (max-width: 760px) { .mirror-grid { grid-template-columns: 1fr; } }
+  .mirror-view { position: relative; aspect-ratio: 4/3; border-radius: 18px; overflow: hidden; background: var(--void-2); border: 1px solid var(--panel-border); }
+  .mirror-view video, .mirror-view canvas { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .mirror-view canvas#agedCanvas { position: absolute; inset: 0; }
+  .horizon-tabs { display: flex; gap: 8px; flex-wrap: wrap; margin: 16px 0; }
+  .horizon-tabs button { flex: 1; min-width: 70px; }
+  .horizon-tabs button.active { background: var(--dermal); border-color: var(--dermal); color: var(--void); font-weight: 600; }
+  .delta-row { display: flex; justify-content: space-between; font-size: 0.85rem; padding: 6px 0; border-bottom: 1px solid var(--panel-border); }
+  .delta-row .change.up { color: var(--coral); }
+  .delta-row .change.down { color: var(--dermal); }
+  .meta-note { font-size: 0.78rem; color: var(--slate); margin-top: 14px; line-height: 1.5; }
+</style>
+</head>
+<body>
+<canvas id="bg-canvas"></canvas>
+
+<div class="page">
+  <nav class="nav">
+    <div class="wordmark">Derma<span>Twin</span> AI</div>
+    <div>
+      <a href="index.html">Scan</a>
+      <a href="mirror.html" class="active">Mirror</a>
+      <a href="dashboard.html">Dashboard</a>
+    </div>
+  </nav>
+
+  <div class="eyebrow">Skin aging simulator · 03 mirror</div>
+  <h1>What does your skin<br/>look like in <span class="accent">5 years</span>?</h1>
+  <p class="lede">Live camera feed on the left, projected onto each time horizon on the right. The visual shift (contrast, warmth, softness) is a stylized representation of the projected metrics below it — not a medical rendering.</p>
+
+  <div class="mirror-grid">
+    <div>
+      <div class="mirror-view" id="mirrorView">
+        <video id="video" autoplay playsinline muted style="display:none;"></video>
+        <canvas id="agedCanvas" style="display:none;"></canvas>
+      </div>
+      <div class="controls">
+        <button class="btn" id="camBtn">Enable camera</button>
+        <button class="btn file-btn" id="fileBtn">Choose photo</button>
+        <input type="file" id="fileInput" accept="image/*" style="display:none;" />
+      </div>
+      <div class="horizon-tabs" id="horizonTabs">
+        <button class="btn active" data-h="now">Now</button>
+        <button class="btn" data-h="7_days">7 days</button>
+        <button class="btn" data-h="30_days">30 days</button>
+        <button class="btn" data-h="90_days">90 days</button>
+        <button class="btn" data-h="180_days">180 days</button>
+        <button class="btn" data-h="5_years">5 years</button>
+      </div>
+    </div>
+
+    <div class="twin-panel">
+      <h3>Projected change</h3>
+      <div class="field-row">
+        <label>User ID</label>
+        <input type="text" id="userId" value="demo-user" />
+      </div>
+      <button class="btn primary" id="loadBtn" style="margin-top:8px;">Load prediction</button>
+      <div id="deltaList" style="margin-top:14px;"></div>
+      <div class="meta-note" id="metaNote"></div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="background.js"></script>
+<script>
+  initBackground("bg-canvas");
+  const API_BASE = "http://localhost:8000";
+
+  const video = document.getElementById("video");
+  const agedCanvas = document.getElementById("agedCanvas");
+  const ctx = agedCanvas.getContext("2d");
+  const camBtn = document.getElementById("camBtn");
+  const fileBtn = document.getElementById("fileBtn");
+  const fileInput = document.getElementById("fileInput");
+  const horizonTabs = document.getElementById("horizonTabs");
+  const loadBtn = document.getElementById("loadBtn");
+
+  let timeline = null;
+  let baselineMetrics = null;
+  let currentHorizon = "now";
+  let sourceMode = "none"; // "camera" | "file"
+  let staticImage = null;
+
+  camBtn.addEventListener("click", async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" }, audio: false });
+      video.srcObject = stream;
+      video.style.display = "none";
+      agedCanvas.style.display = "block";
+      camBtn.style.display = "none";
+      fileBtn.style.display = "none";
+      sourceMode = "camera";
+      video.addEventListener("loadedmetadata", () => {
+        agedCanvas.width = video.videoWidth;
+        agedCanvas.height = video.videoHeight;
+        drawLoop();
+      });
+    } catch (err) {
+      alert("Camera access denied or unavailable: " + err.message);
+    }
+  });
+
+  fileBtn.addEventListener("click", () => fileInput.click());
+
+  fileInput.addEventListener("change", () => {
+    const file = fileInput.files[0];
+    if (!file) return;
+    const img = new Image();
+    img.onload = () => {
+      staticImage = img;
+      agedCanvas.width = img.naturalWidth;
+      agedCanvas.height = img.naturalHeight;
+      agedCanvas.style.display = "block";
+      camBtn.style.display = "none";
+      fileBtn.style.display = "none";
+      sourceMode = "file";
+      drawStatic();
+    };
+    img.src = URL.createObjectURL(file);
+  });
+
+  function severityFor(horizon) {
+    // 0 = no visual shift ("now"), higher = more pronounced stylized aging effect
+    const map = { now: 0, "7_days": 0.05, "30_days": 0.15, "90_days": 0.35, "180_days": 0.55, "5_years": 0.9 };
+    return map[horizon] ?? 0;
+  }
+
+  function applyEffect(sourceEl) {
+    const sev = severityFor(currentHorizon);
+    ctx.filter = `contrast(${100 + sev * 25}%) saturate(${100 - sev * 35}%) brightness(${100 - sev * 8}%)`;
+    ctx.drawImage(sourceEl, 0, 0, agedCanvas.width, agedCanvas.height);
+
+    if (sev > 0.02) {
+      ctx.filter = "none";
+      ctx.strokeStyle = `rgba(246,193,119,${sev * 0.22})`;
+      ctx.lineWidth = 1;
+      const lineCount = Math.round(sev * 18);
+      for (let i = 0; i < lineCount; i++) {
+        const y = (agedCanvas.height / (lineCount + 1)) * (i + 1) + Math.sin(Date.now() / 900 + i) * 2;
+        ctx.beginPath();
+        ctx.moveTo(agedCanvas.width * 0.15, y);
+        ctx.lineTo(agedCanvas.width * 0.85, y);
+        ctx.stroke();
+      }
+    }
+  }
+
+  function drawLoop() {
+    if (sourceMode !== "camera") return;
+    if (video.readyState >= 2) applyEffect(video);
+    requestAnimationFrame(drawLoop);
+  }
+
+  function drawStatic() {
+    if (sourceMode === "file" && staticImage) applyEffect(staticImage);
+  }
+
+  horizonTabs.addEventListener("click", (e) => {
+    const btn = e.target.closest("button[data-h]");
+    if (!btn) return;
+    [...horizonTabs.children].forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    currentHorizon = btn.dataset.h;
+    renderDeltas();
+    if (sourceMode === "file") drawStatic();
+  });
+
+  loadBtn.addEventListener("click", async () => {
+    const userId = document.getElementById("userId").value || "demo-user";
+    try {
+      const res = await fetch(`${API_BASE}/predict/${encodeURIComponent(userId)}`);
+      const data = await res.json();
+      if (data.error) { alert(data.error + " (run a scan on the Scan page first)"); return; }
+      timeline = data;
+      // "now" baseline comes from the twin directly
+      const twinRes = await fetch(`${API_BASE}/twin/${encodeURIComponent(userId)}`);
+      const twin = await twinRes.json();
+      baselineMetrics = twin.skin_metrics;
+      renderDeltas();
+    } catch (err) {
+      alert("Couldn't reach the backend: " + err.message);
+    }
+  });
+
+  function renderDeltas() {
+    const el = document.getElementById("deltaList");
+    const meta = document.getElementById("metaNote");
+    if (!timeline || !baselineMetrics) {
+      el.innerHTML = `<div class="empty-state">Load a prediction to see projected changes.</div>`;
+      return;
+    }
+    if (currentHorizon === "now") {
+      el.innerHTML = Object.entries(baselineMetrics).map(([k, v]) =>
+        `<div class="delta-row"><span>${k.replace("_"," ")}</span><span>${Math.round(v*100)}%</span></div>`
+      ).join("");
+      meta.textContent = "Baseline from your most recent scan.";
+      return;
+    }
+    const projected = timeline[currentHorizon];
+    el.innerHTML = Object.entries(projected).map(([k, v]) => {
+      const base = baselineMetrics[k];
+      const diff = Math.round((v - base) * 100);
+      const cls = diff > 0 ? "up" : diff < 0 ? "down" : "";
+      const sign = diff > 0 ? "+" : "";
+      return `<div class="delta-row"><span>${k.replace("_"," ")}</span><span>${Math.round(v*100)}% <span class="change ${cls}">(${sign}${diff})</span></span></div>`;
+    }).join("");
+    const m = timeline._meta || {};
+    meta.textContent = `Adherence score ${m.adherence_score ?? "—"} · UV used ${m.uv_index_used ?? "—"} · ${m.note ?? ""}`;
+  }
+</script>
+</body>
+</html>
